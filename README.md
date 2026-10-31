@@ -1,6 +1,7 @@
 <div align=center>
 
-<img src="port/assets/icon.jpg" alt="Shank 2" width="20%">
+<img width="616" height="353" alt="capsule_616x353" src="https://github.com/user-attachments/assets/5d157e9d-41af-422e-876f-14d47c1718de" />
+
 
 </div>
 <h1 align=center>shank2-nx</h1>
@@ -14,7 +15,10 @@ Switch's own graphics API. It runs at 60 fps.
 > (`Content/0000000000000000/5841120C/000D0000/`), or the game extracted from it. This repository and its releases
 > contain no game data.
 
-## How to install
+## How to install 
+
+<img width="373" height="311" alt="giphy" src="https://github.com/user-attachments/assets/bd1e1649-699a-49f7-be8c-730cfa5d96e0" />
+
 
 1. Open the installer page: **https://zhtipu.github.io/shank2-nx-installer/**
 2. Choose your game (its package file, the `5841120C` folder, or an extracted folder with `default.xex`) and press
