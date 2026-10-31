@@ -1,0 +1,102 @@
+# Shank 2 (Xbox Live Arcade, title 5841120C, default.xex): analysis corrections for the code generator.
+#
+
+# sub_82602E78: the bctr at 0x82602EBC dispatches through a byte table at 0x82082E30 (target = 0x82602EC0 + 4 * byte).
+# Only the first 16 entries belong to this switch; the generator would otherwise read 512.
+[[switch_tables]]
+address = 0x82602EBC
+register = 11
+labels = [
+    0x82602EF0, 0x82602EF0, 0x82602EF0, 0x82602EF0,
+    0x82602FC8, 0x82602EF0, 0x82602EF0, 0x82602EF0,
+    0x82602EF0, 0x82602EC0, 0x82602EF0, 0x82602EF0,
+    0x82602EC0, 0x82602EC0, 0x82602EC0, 0x82602EC0,
+]
+
+[functions]
+# Tail-call targets that automatic discovery did not assign to any function. No sizes imposed.
+"0x8238E494" = { }  # from 0x8238E4A4
+"0x8237E0B0" = { }  # from 0x82396DA4
+"0x8237E208" = { }  # from 0x82379228
+"0x8237E1F8" = { }  # from 0x82379230
+"0x8237E1E8" = { }  # from 0x82379238
+"0x8237E1D8" = { }  # from 0x82379240
+"0x8237E128" = { }  # from 0x8238B994
+"0x82371234" = { }  # from 0x82371244
+"0x82389EA8" = { }  # from 0x8238AC8C
+"0x8238E5AC" = { }  # from 0x8238E5BC
+
+# Code pointers into unclaimed gaps, stored in data (vtables, callback tables) or built in code (lis/addi:
+# callbacks passed at run time), accepted by tools/pointer_fixpoint.py pass 1: the scratch listing fits
+# in the gap (or continues only into a registered function it branches to: "then the registered tail"),
+# ends in a terminator and reads no register that is undefined at a function entry. The comment says
+# where the pointer is stored ("pointer at") or built ("built at", inside the code range).
+"0x82249F34" = { }  # 4 instructions, pointer at 0x820AD6D8
+"0x822585B4" = { }  # 29 instructions, built at 0x822585A4
+"0x82320090" = { }  # 9 in the gap, then the registered tail sub_823200B4, pointer at 0x820133A4
+"0x8232397C" = { }  # 29 instructions, built at 0x8232396C
+"0x823241FC" = { }  # 19 instructions, built at 0x823241EC
+"0x82324268" = { }  # 33 instructions, built at 0x82324258
+"0x823242B4" = { }  # 27 instructions, built at 0x823242A4
+"0x82363BC0" = { }  # 2 instructions, pointer at 0x82017A28
+"0x8236A0A8" = { }  # 7 in the gap, then the registered tail sub_8236A0C4, pointer at 0x82017D74
+"0x823711C0" = { }  # 29 in the gap, then the registered tail sub_82371234, sub_8237123C, sub_82371248, pointer at 0x82017F70
+"0x8238E428" = { }  # 27 in the gap, then the registered tail sub_8238E494, sub_8238E49C, sub_8238E4A8, pointer at 0x82018BC8
+"0x8238E540" = { }  # 27 in the gap, then the registered tail sub_8238E5AC, sub_8238E5B4, sub_8238E5C0, pointer at 0x82018C28
+"0x823FE5A0" = { }  # 4 instructions, pointer at 0x82026208 (+2 more)
+"0x823FE8E0" = { }  # 10 instructions, pointer at 0x820263CC (+2 more)
+"0x823FE908" = { }  # 10 instructions, pointer at 0x820263D0 (+2 more)
+"0x823FE930" = { }  # 10 instructions, pointer at 0x820263D4 (+2 more)
+"0x823FE958" = { }  # 10 instructions, pointer at 0x820263D8 (+2 more)
+"0x823FED70" = { }  # 8 instructions, pointer at 0x8202640C (+1 more)
+"0x823FED90" = { }  # 1 instructions, pointer at 0x82026220 (+1 more)
+"0x823FEDA8" = { }  # 4 instructions, built at 0x82407E24
+"0x823FEDB8" = { }  # 4 instructions, built at 0x8240861C
+"0x823FEDC8" = { }  # 4 instructions, built at 0x824080D4
+"0x823FEDD8" = { }  # 4 instructions, built at 0x82407F04
+"0x823FEDE8" = { }  # 4 instructions, built at 0x82407C5C
+"0x823FEDF8" = { }  # 4 instructions, built at 0x82408124
+"0x823FEE08" = { }  # 4 instructions, built at 0x8240844C
+"0x823FEE18" = { }  # 4 instructions, built at 0x82407CAC
+"0x823FEE28" = { }  # 4 instructions, built at 0x82408174
+"0x82492A50" = { }  # 1 instructions, built at 0x8247F030 (+1 more)
+"0x82549490" = { }  # 20 instructions, pointer at 0x820538CC (+1 more)
+"0x825494E0" = { }  # 6 in the gap, then the registered tail sub_825494F8, pointer at 0x820538D4
+"0x82583648" = { }  # 11 instructions, pointer at 0x820582AC (+12 more)
+"0x8259D760" = { }  # 2 instructions, pointer at 0x82061B70
+"0x8259FC00" = { }  # 2 instructions, pointer at 0x82061C24 (+4 more)
+"0x8259FC08" = { }  # 2 instructions, pointer at 0x82061C6C
+"0x8259FC18" = { }  # 2 instructions, pointer at 0x82061C68 (+4 more)
+"0x8259FC20" = { }  # 2 instructions, pointer at 0x82061C40 (+4 more)
+"0x8259FC28" = { }  # 2 instructions, pointer at 0x82061C3C (+4 more)
+"0x8259FC30" = { }  # 2 instructions, pointer at 0x82061C60 (+4 more)
+"0x8259FC38" = { }  # 22 instructions, pointer at 0x82061C8C (+2 more)
+"0x8259FC90" = { }  # 2 instructions, pointer at 0x82061C20 (+2 more)
+"0x825A4F78" = { }  # 2 instructions, pointer at 0x82061C30 (+4 more)
+"0x825A4F80" = { }  # 2 instructions, pointer at 0x82061C44 (+4 more)
+"0x825A4F88" = { }  # 2 instructions, pointer at 0x82061C2C (+4 more)
+"0x825A4F90" = { }  # 2 instructions, pointer at 0x82061FDC
+"0x825A4FA0" = { }  # 2 instructions, pointer at 0x82061C54 (+4 more)
+"0x825A4FA8" = { }  # 2 instructions, pointer at 0x82061C28 (+4 more)
+"0x825A4FB0" = { }  # 2 instructions, pointer at 0x82061C34 (+4 more)
+"0x825A4FB8" = { }  # 61 instructions, pointer at 0x82061FFC
+"0x825A6368" = { }  # 2 instructions, pointer at 0x82061FC0 (+1 more)
+"0x825A6370" = { }  # 2 instructions, pointer at 0x82061F90 (+1 more)
+"0x825A6378" = { }  # 2 instructions, pointer at 0x82061C64 (+4 more)
+"0x825A6380" = { }  # 63 instructions, pointer at 0x820620C4
+"0x825A6B40" = { }  # 6 instructions, pointer at 0x82062184
+"0x825A79C0" = { }  # 2 instructions, pointer at 0x82062118
+"0x825A8718" = { }  # 2 instructions, pointer at 0x820621E0
+"0x825A8C10" = { }  # 2 instructions, pointer at 0x820621D4
+"0x825AB6A8" = { }  # 11 in the gap, then the registered tail sub_825AB6D4, pointer at 0x820623B4
+"0x825B9458" = { }  # 2 instructions, pointer at 0x820661C0 (+1 more)
+"0x825B9468" = { }  # 2 instructions, pointer at 0x82066234
+"0x825BAD58" = { }  # 2 instructions, pointer at 0x820661D4 (+1 more)
+"0x825BAD78" = { }  # 2 instructions, pointer at 0x820662D8 (+1 more)
+"0x8263E040" = { }  # 19 instructions, built at 0x8263E030
+"0x826A8618" = { }  # 1 instructions, built at 0x826A7DA0
+
+
+# Runtime auto-resolve candidate, accepted from an observed indirect-call failure.
+# Exact start the 116-byte gap 0x824C85C8-0x824C863C; only this address is declared.
+"0x824C85C8" = { }

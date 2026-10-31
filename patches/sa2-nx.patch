@@ -1,0 +1,423 @@
+diff --git a/sdk/include/rex/audio/xma/context.h b/sdk/include/rex/audio/xma/context.h
+index 9d00a7f..8ce8b79 100644
+--- a/sdk/include/rex/audio/xma/context.h
++++ b/sdk/include/rex/audio/xma/context.h
+@@ -257,7 +257,7 @@ class XmaContext {
+   uint32_t GetAmountOfBitsToRead(uint32_t remaining_stream_bits, uint32_t frame_size);
+   const uint8_t* GetNextPacket(XMA_CONTEXT_DATA* data, uint32_t next_packet_index,
+                                uint32_t current_input_packet_count);
+-  uint32_t GetNextPacketReadOffset(uint8_t* buffer, uint32_t next_packet_index,
++  uint32_t GetNextPacketReadOffset(uint8_t* buffer, uint32_t& next_packet_index,
+                                    uint32_t current_input_packet_count);
+   uint8_t* GetCurrentInputBuffer(XMA_CONTEXT_DATA* data);
+   void AdvanceInputPacket(XMA_CONTEXT_DATA* data, uint32_t next_packet_index);
+diff --git a/sdk/include/rex/filesystem.h b/sdk/include/rex/filesystem.h
+index 2b9a384..6a84879 100644
+--- a/sdk/include/rex/filesystem.h
++++ b/sdk/include/rex/filesystem.h
+@@ -36,6 +36,18 @@ std::filesystem::path GetExecutablePath();
+ // Get executable folder.
+ std::filesystem::path GetExecutableFolder();
+ 
++// shank2-nx: std::filesystem::absolute, except for a newlib device path ("shank2rom:/game_root", a mounted RomFS on the
++// Switch): libstdc++ sees no root there, takes it for relative and prepends the current directory, which breaks it.
++// Such a path is already complete for newlib's stat and fopen.
++inline std::filesystem::path AbsoluteOrDevicePath(const std::filesystem::path& path) {
++  const std::string text = path.string();
++  const auto colon = text.find(":/");
++  if (colon != std::string::npos && colon > 1 && text.find('/') > colon) {
++    return path;
++  }
++  return std::filesystem::absolute(path);
++}
++
+ // Get user folder.
+ std::filesystem::path GetUserFolder();
+ 
+diff --git a/sdk/src/audio/xma_context.cpp b/sdk/src/audio/xma_context.cpp
+index 94f1d8d..e4ba7f9 100644
+--- a/sdk/src/audio/xma_context.cpp
++++ b/sdk/src/audio/xma_context.cpp
+@@ -10,6 +10,8 @@
+ */
+ 
+ #include <algorithm>
++#include <atomic>
++#include <cstdlib>
+ #include <chrono>
+ #include <condition_variable>
+ #include <cstring>
+@@ -388,6 +390,41 @@ bool XmaContext::Work() {
+   XMA_CONTEXT_DATA data(context_ptr);
+   const XMA_CONTEXT_DATA initial_data = data;
+ 
++  // Shank 2 diagnostic (SHANK2_DIAG_XMA=1): a context's input buffers whenever they change: addresses, valid bits,
++  // packet counts and a fingerprint of each valid buffer's bytes, to tell whether stems share buffers or contents.
++  {
++    static const bool diag = std::getenv("SHANK2_DIAG_XMA") != nullptr;
++    static std::atomic<uint32_t> lines{0};
++    if (diag && id() < 64) {
++      static uint64_t last_key[64];
++      const uint64_t key = (uint64_t(data.input_buffer_0_ptr) << 32 | data.input_buffer_1_ptr) ^
++                           (uint64_t(data.input_buffer_0_valid) << 1 | data.input_buffer_1_valid);
++      const auto fingerprint = [&](uint32_t ptr, uint32_t packets) -> uint64_t {
++        const uint8_t* p = ptr ? memory()->TranslatePhysical(ptr) : nullptr;
++        if (!p || !packets)
++          return 0;
++        uint64_t h = 0xCBF29CE484222325ull;
++        const uint32_t bytes = std::min<uint32_t>(packets * kBytesPerPacket, 64 * 1024);
++        for (uint32_t i = 0; i < bytes; i += 61)
++          h = (h ^ p[i]) * 0x100000001B3ull;
++        return h;
++      };
++      if (key != last_key[id()] && lines.fetch_add(1, std::memory_order_relaxed) < 3000) {
++        last_key[id()] = key;
++        REXAPU_INFO("[xmadiag] ctx {} buf0 {:08X} v{} p{} fp {:016X} | buf1 {:08X} v{} p{} fp {:016X} | cur {} read {} "
++                    "loop {} stereo {}",
++                    id(), uint32_t(data.input_buffer_0_ptr), uint32_t(data.input_buffer_0_valid),
++                    uint32_t(data.input_buffer_0_packet_count),
++                    data.input_buffer_0_valid ? fingerprint(data.input_buffer_0_ptr, data.input_buffer_0_packet_count) : 0,
++                    uint32_t(data.input_buffer_1_ptr), uint32_t(data.input_buffer_1_valid),
++                    uint32_t(data.input_buffer_1_packet_count),
++                    data.input_buffer_1_valid ? fingerprint(data.input_buffer_1_ptr, data.input_buffer_1_packet_count) : 0,
++                    uint32_t(data.current_buffer), uint32_t(data.input_buffer_read_offset), uint32_t(data.loop_count),
++                    uint32_t(data.is_stereo));
++      }
++    }
++  }
++
+   if (!data.output_buffer_valid) {
+     return true;
+   }
+@@ -640,7 +677,7 @@ const uint8_t* XmaContext::GetNextPacket(XMA_CONTEXT_DATA* data, uint32_t next_p
+   return memory()->TranslatePhysical(next_buffer_address) + next_packet_index * kBytesPerPacket;
+ }
+ 
+-uint32_t XmaContext::GetNextPacketReadOffset(uint8_t* buffer, uint32_t next_packet_index,
++uint32_t XmaContext::GetNextPacketReadOffset(uint8_t* buffer, uint32_t& next_packet_index,
+                                              uint32_t current_input_packet_count) {
+   while (next_packet_index < current_input_packet_count) {
+     uint8_t* next_packet = buffer + (next_packet_index * kBytesPerPacket);
+@@ -652,7 +689,13 @@ uint32_t XmaContext::GetNextPacketReadOffset(uint8_t* buffer, uint32_t next_pack
+     if (packet_frame_offset < kBitsPerPacket) {
+       return (next_packet_index * kBitsPerPacket) + packet_frame_offset;
+     }
+-    next_packet_index++;
++    // Shank 2: no frame starts in this packet (it only continues one). Its own skip count leads to the next packet of
++    // the same stream, as in Xenia. Stepping one packet entered the next stream of an interleaved multi-stream file:
++    // Shank 2's six music stems share one buffer pair, so every stem fell onto the others' packets and they all
++    // played the same audio (the enemy-wave layer was never heard). On return the index is past the buffer, so the
++    // caller carries the rest into the other buffer.
++    const uint8_t next_skip = xma::GetPacketSkipCount(next_packet);
++    next_packet_index += next_skip == 0xFF ? 1u : uint32_t(next_skip) + 1u;
+   }
+ 
+   // 32 is a valid offset: the first frame of the first packet.
+@@ -678,7 +721,9 @@ void XmaContext::AdvanceInputPacket(XMA_CONTEXT_DATA* data, uint32_t next_packet
+         data->input_buffer_read_offset = offset;
+         return;
+       }
+-      next_packet_index = 0;
++      // Shank 2: the walk ran past this buffer; carry what is left of the skip into the other one (restarting at its
++      // first packet put an interleaved stream onto stream 0).
++      next_packet_index -= count;
+     } else {
+       next_packet_index -= count;
+     }
+@@ -1020,8 +1065,31 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+                                                       packet_info.current_frame_size_);
+ 
+   if (bits_to_copy == 0) {
+-    REXAPU_ERROR("XmaContext {}: There are no bits to copy!", id());
+-    SwapInputBuffer(data);
++    {
++      // Shank 2 diagnostic: first few occurrences per context, with the state the game left it in.
++      static std::atomic<uint32_t> diag_count[64];
++      if (id() < 64 && diag_count[id()].fetch_add(1) < 3) {
++        REXAPU_ERROR(
++            "XmaContext {} diag: cur_buf={} valid0={} valid1={} pkts0={} pkts1={} cur_pkts={} "
++            "pkt_idx={} next_pkt_idx={} read_off={} rel_off={} first_frame_off={} skip={} "
++            "frame_size={} bits_remaining={} loop_count={} stop_when_done={} err={} parser_err={} "
++            "stereo={} rate={}",
++            id(), uint32_t(data->current_buffer), uint32_t(data->input_buffer_0_valid),
++            uint32_t(data->input_buffer_1_valid), uint32_t(data->input_buffer_0_packet_count),
++            uint32_t(data->input_buffer_1_packet_count), current_input_packet_count, packet_index,
++            next_packet_index, uint32_t(data->input_buffer_read_offset), relative_offset,
++            packet_first_frame_offset, uint32_t(skip_count), packet_info.current_frame_size_,
++            uint32_t(stream.BitsRemaining()), uint32_t(data->loop_count),
++            uint32_t(data->stop_when_done), uint32_t(data->error_status),
++            uint32_t(data->parser_error_status), uint32_t(data->is_stereo),
++            uint32_t(data->sample_rate));
++      }
++    }
++    // Shank 2: no frame left in this packet. Go on to this stream's next packet (packet + skip + 1, into the other
++    // buffer if it runs past this one), as the frame path does. Swapping to the other buffer's first packet put every
++    // stream of an interleaved multi-stream file (Shank 2's music stems share one buffer pair, one packet each in
++    // turn) onto stream 0, so all the stems played the same audio and the enemy-wave layer was never heard.
++    AdvanceInputPacket(data, next_packet_index);
+     return;
+   }
+ 
+diff --git a/sdk/src/kernel/xam/xam_net.cpp b/sdk/src/kernel/xam/xam_net.cpp
+index 58e36a4..b8ca4c9 100644
+--- a/sdk/src/kernel/xam/xam_net.cpp
++++ b/sdk/src/kernel/xam/xam_net.cpp
+@@ -12,7 +12,9 @@
+ // Disable warnings about unused parameters for kernel functions
+ #pragma GCC diagnostic ignored "-Wunused-parameter"
+ 
++#include <chrono>
+ #include <cstring>
++#include <thread>
+ 
+ #if REX_PLATFORM_MAC
+ #include <sys/select.h>
+@@ -579,6 +581,12 @@ u32 NetDll_inet_addr_entry(mapped_string addr_ptr) {
+ }
+ 
+ u32 NetDll_socket_entry(u32 caller, u32 af, u32 type, u32 protocol) {
++#if REX_PLATFORM_SWITCH
++  // The Switch build has no network: libnx's BSD socket layer blocks forever without a socket session (the first
++  // Shank 2 run hung in select). Report the network as down, as on an offline console, so the game never gets a socket.
++  XThread::SetLastError(0x2742);  // WSAENETDOWN
++  return static_cast<u32>(-1);
++#endif
+   XSocket* socket = new XSocket(REX_KERNEL_STATE());
+   X_STATUS result =
+       socket->Initialize(XSocket::AddressFamily((uint32_t)af), XSocket::Type((uint32_t)type),
+@@ -825,8 +833,28 @@ i32 NetDll_select_entry(i32 caller, i32 nfds, ppc_ptr_t<x_fd_set> readfds,
+                                              reinterpret_cast<int32_t*>(&timeout.tv_usec));
+     timeout_in = &timeout;
+   }
++#if REX_PLATFORM_SWITCH
++  // libnx's select() goes through the BSD socket service and blocks forever in sessionmgrAttachClient when this
++  // process has no socket session (the main thread would hang here at boot: no frame, no
++  // audio). The Switch build has no network, so no real socket can exist: behave like a select with nothing ready.
++  // With a timeout, wait it out (Winsock's select(0, 0, 0, 0, &tv) is also the usual "sleep" idiom); without one a
++  // real select would block forever, so report the network as down instead.
++  int ret;
++  FD_ZERO(&native_readfds);
++  FD_ZERO(&native_writefds);
++  FD_ZERO(&native_exceptfds);
++  if (timeout_in) {
++    std::this_thread::sleep_for(std::chrono::seconds(timeout.tv_sec) +
++                                std::chrono::microseconds(timeout.tv_usec));
++    ret = 0;
++  } else {
++    XThread::SetLastError(0x2742);  // WSAENETDOWN
++    ret = -1;
++  }
++#else
+   int ret = select(nfds, readfds ? &native_readfds : nullptr, writefds ? &native_writefds : nullptr,
+                    exceptfds ? &native_exceptfds : nullptr, timeout_in);
++#endif
+   if (readfds) {
+     host_readfds.UpdateFrom(&native_readfds);
+     host_readfds.Store(readfds);
+diff --git a/sdk/src/system/runtime.cpp b/sdk/src/system/runtime.cpp
+index f68a784..e2531e0 100644
+--- a/sdk/src/system/runtime.cpp
++++ b/sdk/src/system/runtime.cpp
+@@ -9,6 +9,7 @@
+  *              See LICENSE file in the project root for full license text.
+  */
+ 
++#include <rex/filesystem.h>
+ #include <rex/chrono/clock.h>
+ #include <rex/cvar.h>
+ #include <rex/platform.h>
+@@ -312,7 +313,7 @@ bool Runtime::SetupVfs() {
+     return true;
+   }
+ 
+-  auto abs_game_root = std::filesystem::absolute(game_data_root_);
++  auto abs_game_root = rex::filesystem::AbsoluteOrDevicePath(game_data_root_);  // shank2-nx: NSP RomFS paths
+   // The asset cache: the pack is read-only, so not with game-relative writes allowed.
+   bool use_pack = REXCVAR_GET(asset_pack) && !REXCVAR_GET(allow_game_relative_writes);
+   if (use_pack && !rex::filesystem::PackDevice::Exists(abs_game_root) && REXCVAR_GET(asset_pack_build) &&
+diff --git a/sdk/src/system/xmemory.cpp b/sdk/src/system/xmemory.cpp
+index f05375a..3ab9c82 100644
+--- a/sdk/src/system/xmemory.cpp
++++ b/sdk/src/system/xmemory.cpp
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <algorithm>
++#include <map>
+ #include <cstring>
+ #include <utility>
+ 
+@@ -1674,7 +1675,44 @@ bool BaseHeap::AllocRange(uint32_t low_address, uint32_t high_address, uint32_t
+   }
+   if (start_page_number == UINT_MAX || end_page_number == UINT_MAX) {
+     // Out of memory.
+-    REXSYS_ERROR("BaseHeap::Alloc failed to find contiguous range");
++    {
++      // Diagnostic: is the range really full, or only fragmented?
++      uint64_t free_pages = 0, used_pages = 0, run = 0, max_run = 0;
++      const uint32_t first = (low_address - heap_base_) >> page_size_shift_;
++      const uint32_t last = (high_address - heap_base_) >> page_size_shift_;
++      for (uint32_t pn = first; pn <= last && pn < page_table_.size(); ++pn) {
++        if (page_table_[pn].state == 0) {
++          ++free_pages;
++          if (++run > max_run) max_run = run;
++        } else {
++          ++used_pages;
++          run = 0;
++        }
++      }
++      REXSYS_ERROR(
++          "BaseHeap::Alloc failed to find contiguous range: size 0x{:X} align 0x{:X} range {:08X}-{:08X} type {:X} | "
++          "pages used {} free {} largest free run {} (page 0x{:X})",
++          size, alignment, low_address, high_address, allocation_type, used_pages, free_pages, max_run, page_size_);
++      // Diagnostic: which allocation sizes hold the pages (region size in pages -> count), once per process.
++      static bool printed_breakdown = false;
++      if (!printed_breakdown) {
++        printed_breakdown = true;
++        std::map<uint32_t, uint32_t> by_size;
++        for (uint32_t pn = first; pn <= last && pn < page_table_.size(); ++pn) {
++          const auto& e = page_table_[pn];
++          if (e.state != 0 && e.base_address == pn + (heap_base_ >> page_size_shift_)) by_size[e.region_page_count]++;
++        }
++        std::vector<std::pair<uint64_t, uint32_t>> ranked;  // total pages, region pages
++        for (auto& [pages, count] : by_size) ranked.push_back({uint64_t(pages) * count, pages});
++        std::sort(ranked.rbegin(), ranked.rend());
++        for (size_t i = 0; i < ranked.size() && i < 12; ++i) {
++          const uint32_t pages = ranked[i].second;
++          REXSYS_ERROR("  heap breakdown: {} blocks of {} pages ({} KB) = {} MB", by_size[pages], pages,
++                       pages * (page_size_ / 1024), ranked[i].first * (page_size_ / 1024) / 1024);
++        }
++        REXSYS_ERROR("  heap breakdown: {} distinct block sizes", by_size.size());
++      }
++    }
+     assert_always("Heap exhausted!");
+     return false;
+   }
+@@ -2101,7 +2139,8 @@ bool PhysicalHeap::Alloc(uint32_t size, uint32_t alignment, uint32_t allocation_
+   uint32_t parent_address;
+   if (!parent_heap_->AllocRange(parent_heap_start, parent_heap_end, size, alignment,
+                                 allocation_type, protect, top_down, &parent_address)) {
+-    REXSYS_ERROR("PhysicalHeap::Alloc unable to alloc physical memory in parent heap");
++    REXSYS_ERROR("PhysicalHeap::Alloc unable to alloc physical memory in parent heap: size 0x{:X} align 0x{:X} heap {:08X}",
++                 size, alignment, heap_base_);
+     return false;
+   }
+ 
+diff --git a/sdk/src/ui/rex_app.cpp b/sdk/src/ui/rex_app.cpp
+index 68281e2..c4a353f 100644
+--- a/sdk/src/ui/rex_app.cpp
++++ b/sdk/src/ui/rex_app.cpp
+@@ -245,7 +245,7 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
+   // The game data is the folder, or only its asset cache (<folder>.nxpack + .nxidx, see pack_device.h): on the Switch
+   // the folder is usually not on the card at all once the pack is there.
+   if (!std::filesystem::is_directory(paths.game_data_root) &&
+-      !rex::filesystem::PackDevice::Exists(std::filesystem::absolute(paths.game_data_root))) {
++      !rex::filesystem::PackDevice::Exists(rex::filesystem::AbsoluteOrDevicePath(paths.game_data_root))) {
+     auto msg = fmt::format("--game_data_root does not exist: {}", paths.game_data_root.string());
+     REXLOG_ERROR("{}", msg);
+     rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
+diff --git a/app/thirdparty/plume/plume_d3d12.cpp b/app/thirdparty/plume/plume_d3d12.cpp
+index 13abe89..c6edc51 100644
+--- a/app/thirdparty/plume/plume_d3d12.cpp
++++ b/app/thirdparty/plume/plume_d3d12.cpp
+@@ -6,6 +6,9 @@
+ //
+ 
+ #include "plume_d3d12.h"
++#include <cstdlib>
++#include <mutex>
++#include <unordered_map>
+ 
+ #include <unordered_set>
+ 
+@@ -29,6 +32,20 @@
+ //#   define D3D12_DEBUG_LAYER_GPU_BASED_VALIDATION_ENABLED
+ #endif
+ 
++// shank2-nx: the debug layer at run time in any build: PLUME_D3D12_DEBUG=1 (2: GPU-based validation as well); its
++// messages go to stderr (logs/plume_stderr.log) instead of a debugger.
++static int plumeD3D12DebugLevel() {
++    static const int level = [] {
++        const char *e = std::getenv("PLUME_D3D12_DEBUG");
++        return e ? std::atoi(e) : 0;
++    }();
++#ifdef D3D12_DEBUG_LAYER_ENABLED
++    return level ? level : 1;
++#else
++    return level;
++#endif
++}
++
+ //#define D3D12_DEBUG_SET_STABLE_POWER_STATE
+ 
+ // Old Windows SDK versions don't provide this macro, so we workaround it by making sure it is defined.
+@@ -3826,10 +3843,9 @@ namespace plume {
+             rtDummyLocalPipelineLayout = createPipelineLayout(pipelineLayoutDesc);
+         }
+ 
+-#   ifdef D3D12_DEBUG_LAYER_ENABLED
+         // Add it to the debug layer info queue if available.
+         ID3D12InfoQueue *infoQueue;
+-        res = d3d->QueryInterface(IID_PPV_ARGS(&infoQueue));
++        res = plumeD3D12DebugLevel() > 0 ? d3d->QueryInterface(IID_PPV_ARGS(&infoQueue)) : E_FAIL;
+         if (SUCCEEDED(res)) {
+             D3D12_MESSAGE_SEVERITY severities[] = {
+                 D3D12_MESSAGE_SEVERITY_INFO
+@@ -3855,11 +3871,30 @@ namespace plume {
+             newFilter.DenyList.pIDList = denyIds;
+             infoQueue->PushStorageFilter(&newFilter);
+ 
+-            infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, true);
+-            infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, D3D12_DEBUG_LAYER_BREAK_ON_ERROR);
+-            infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, D3D12_DEBUG_LAYER_BREAK_ON_WARNING);
++            // shank2-nx: no debugger breaks; every message to stderr, at most 400 of each ID.
++            infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, false);
++            infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, false);
++            infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, false);
++            ID3D12InfoQueue1 *infoQueue1 = nullptr;
++            if (SUCCEEDED(infoQueue->QueryInterface(IID_PPV_ARGS(&infoQueue1)))) {
++                DWORD cookie = 0;
++                infoQueue1->RegisterMessageCallback(
++                    [](D3D12_MESSAGE_CATEGORY, D3D12_MESSAGE_SEVERITY severity, D3D12_MESSAGE_ID id, LPCSTR text, void *) {
++                        static std::unordered_map<int, int> counts;
++                        static std::mutex countsMutex;
++                        {
++                            std::lock_guard<std::mutex> lock(countsMutex);
++                            if (counts[int(id)]++ >= 400)
++                                return;
++                        }
++                        fprintf(stderr, "D3D12 [sev %d id %d] %s\n", int(severity), int(id), text);
++                        fflush(stderr);
++                    },
++                    D3D12_MESSAGE_CALLBACK_FLAG_NONE, nullptr, &cookie);
++                fprintf(stderr, "plume: D3D12 message callback registered\n");
++                infoQueue->AddApplicationMessage(D3D12_MESSAGE_SEVERITY_WARNING, "plume: message path self-test");
++            }
+         }
+-#   endif
+         
+         // Fill capabilities.
+         capabilities.descriptorIndexing = true;
+@@ -4187,18 +4222,16 @@ namespace plume {
+         // Create DXGI Factory.
+         UINT dxgiFactoryFlags = 0;
+ 
+-#   ifdef D3D12_DEBUG_LAYER_ENABLED
+         ID3D12Debug1 *debugController;
+-        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)))) {
++        if (plumeD3D12DebugLevel() > 0 && SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)))) {
+             debugController->EnableDebugLayer();
+-#       ifdef D3D12_DEBUG_LAYER_GPU_BASED_VALIDATION_ENABLED
+-            debugController->SetEnableGPUBasedValidation(TRUE);
+-#       endif
++            if (plumeD3D12DebugLevel() > 1)
++                debugController->SetEnableGPUBasedValidation(TRUE);
++            fprintf(stderr, "plume: D3D12 debug layer on (level %d)\n", plumeD3D12DebugLevel());
+ 
+             // Enable additional debug layers.
+             dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
+         }
+-#   endif
+ 
+         HRESULT res = CreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&dxgiFactory));
+         if (FAILED(res)) {

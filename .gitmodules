@@ -1,0 +1,3 @@
+[submodule "tools/sa2-nx"]
+	path = tools/sa2-nx
+	url = https://github.com/ChanseyIsTheBest/sa2-nx
