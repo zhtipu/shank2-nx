@@ -50,7 +50,7 @@ if(REXGLUE_PLATFORM_SWITCH)
     rexglue_setup_target(shank2 GPU_PLUGINS xenos)
     target_compile_definitions(rexcore PRIVATE REX_SWITCH_FALLBACK_EXE="/switch/shank2-nx/shank2.nro")
     # The homebrew menu icon must be a 256x256 JPEG (made from icon.ico, opaque).
-    rexglue_switch_add_nro(shank2 NAME "Shank 2" AUTHOR "github.com/zhtipu" VERSION "0.1.0"
+    rexglue_switch_add_nro(shank2 NAME "Shank 2" AUTHOR "github.com/zhtipu" VERSION "1.0.1"
         ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/icon.jpg")
 else()
     rexglue_setup_target(shank2)

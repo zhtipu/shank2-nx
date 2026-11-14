@@ -96,25 +96,41 @@ bool Attach(Package &p, const uint8_t *base, size_t size, const char *what) {
   return p.ok;
 }
 
+#if defined(__SWITCH__)
+// Provided by the game's NSP glue (shankN_nsp.cpp): "<mounted RomFS>/name" when the running NSP has that file.
+extern "C" const char *rex_nsp_romfs_file(const char *name) __attribute__((weak));
+#endif
+
 Packages &Open() {
   std::call_once(g_packages.once, [] {
     Packages &all = g_packages;
     // peggle2-nx: deko3d_glsl.bin beside the NRO first.
-    const std::string path = NextToExecutable("deko3d_glsl.bin").string();
-    if (FILE *f = std::fopen(path.c_str(), "rb")) {
-      Package &p = all.source[0];
-      std::fseek(f, 0, SEEK_END);
-      const long n = std::ftell(f);
-      std::fseek(f, 0, SEEK_SET);
-      if (n > 0) {
-        p.file.resize(size_t(n));
-        if (std::fread(p.file.data(), 1, p.file.size(), f) != p.file.size())
-          p.file.clear();
+    const auto loadPackage = [&all](const std::string &path) {
+      if (all.source[0].ok)
+        return;
+      if (FILE *f = std::fopen(path.c_str(), "rb")) {
+        Package &p = all.source[0];
+        std::fseek(f, 0, SEEK_END);
+        const long n = std::ftell(f);
+        std::fseek(f, 0, SEEK_SET);
+        if (n > 0) {
+          p.file.resize(size_t(n));
+          if (std::fread(p.file.data(), 1, p.file.size(), f) != p.file.size())
+            p.file.clear();
+        }
+        std::fclose(f);
+        if (Attach(p, p.file.data(), p.file.size(), path.c_str()))
+          REXLOG_INFO("[deko3d] GLSL package {}: {} shaders, {} KB", path, p.header->count, p.size >> 10);
       }
-      std::fclose(f);
-      if (Attach(p, p.file.data(), p.file.size(), path.c_str()))
-        REXLOG_INFO("[deko3d] GLSL package {}: {} shaders, {} KB", path, p.header->count, p.size >> 10);
+    };
+    loadPackage(NextToExecutable("deko3d_glsl.bin").string());
+#if defined(__SWITCH__)
+    // A self-contained NSP carries deko3d_glsl.bin in its own RomFS (the game's NSP glue exports the path).
+    if (!all.source[0].ok && rex_nsp_romfs_file != nullptr) {
+      if (const char *romfs_path = rex_nsp_romfs_file("deko3d_glsl.bin"))
+        loadPackage(romfs_path);
     }
+#endif
     if (&g_deko3dGlslPackageSize != nullptr && g_deko3dGlslPackageSize >= sizeof(PackageHeader) &&
         Attach(all.source[1], g_deko3dGlslPackage, g_deko3dGlslPackageSize, "the NRO's GLSL package"))
       REXLOG_INFO("[deko3d] GLSL package: {} shaders, {} KB in the NRO", all.source[1].header->count,
